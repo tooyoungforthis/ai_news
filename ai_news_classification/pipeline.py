@@ -1,6 +1,6 @@
 import os
 import sys
-from typing import List, Dict
+from typing import List, Dict, Tuple
 
 from tqdm import tqdm
 import numpy as np
@@ -10,6 +10,13 @@ try:
     path = os.path.abspath('../models/')
     sys.path.append(path)
     from text_classification import predict_zero_shot
+except Exception as e:
+    print(e)
+
+try:
+    path = os.path.abspath('../models/')
+    sys.path.append(path)
+    from sentence_similarity import compute_similarity
 except Exception as e:
     print(e)
 
@@ -79,22 +86,42 @@ def classify_data(df: pd.DataFrame, post_themes: List[str]) -> pd.DataFrame:
     return df
 
 
-def fill_storage(df: pd.DataFrame) -> Dict[str, List[str]]:
+def fill_storage(df: pd.DataFrame, post_themes: List[str]) -> Tuple[Dict[str, List[str]], int]:
     """
     Наполнение хранилища уникальными и насыщенными постами
 
     Args:
-        df (pd.DataFrame): Размеченный датафрейм
+        df (pd.DataFrame): Размеченный датафрейм постов
+        post_themes (List[str]): Тематики постов
 
     Returns:
         Dict[str, List[str]]: Ключ - тема поста, значения - тексты постов
+        int: Количество постов, которое мы заменили
     """
 
     # Создадим хранилище
     storage: Dict[str, List[str]] = {}
+    total_similar_saturated_posts = 0
+
+    for post_theme in post_themes:
+
+        theme_posts = df['text'].loc[df['Label'] == post_theme].to_list()
+        storage[post_theme] = theme_posts[:2]
+        posts = theme_posts[2:]
+
+        for post in posts:
+            input_posts = [post for post in storage[post_theme]] + [post]
+            scores = compute_similarity(input_posts)
+            max_similarity_indx = np.argmax(scores)
+            if scores[max_similarity_indx] > 90:
+                if len(post) > len(storage[post_theme][max_similarity_indx]):
+                    storage[post_theme][max_similarity_indx] = post
+                    total_similar_posts += 1
+
+    return storage
 
 
-def compare_with_other_posts(storage: Dict[str, List[str]], post: Dict[str, str]) -> Dict[str, pd.DataFrame]:
+def compare_with_other_posts(storage: Dict[str, List[str]], post: Dict[str, str]) -> Dict[str, List[str]]:
     """
     Сверяем введенный пост на степень сходства с 10 постами в хранилище
     Если степень сходства > 0.9 с записью из хранилища,
@@ -103,11 +130,11 @@ def compare_with_other_posts(storage: Dict[str, List[str]], post: Dict[str, str]
     то выбирается с максимальной степенью сходства
 
     Args:
-        storage (Dict[str, pd.DataFrame]): Хранилище постов. Ключ - тема поста, значение - тексты постов
+        storage (Dict[str,List[str]]): Хранилище постов. Ключ - тема поста, значение - тексты постов
         post (Dict[str, str]):
 
     Returns:
-        Dict[str, pd.DataFrame]: Измененное/неизмененное хранилище
+        Dict[str, List[str]]: Измененное/неизмененное хранилище
     """
 
 
@@ -118,10 +145,14 @@ def out_put_data(storage: Dict[str, pd.DataFrame]) -> None:
 
     Args:
         storage (Dict[str, pd.DataFrame]): Хранилище постов. Ключ - тема поста, значение - тексты постов
+
     Rerurns:
         None
     """
-    pass
+    for post_theme, posts in storage.items():
+        print(post_theme.upper())
+        print(posts)
+        print('-' * 100)
 
 
 def main():
@@ -139,12 +170,10 @@ def main():
                    'Образовательный контент', 'Развлечения', 'Общее']
 
     data = input_data(data_path)
-    print(data.iloc[100])
     data = handle_data(data)
     classified_data = classify_data(data, post_themes)
-    print(classified_data)
-    # storage = fill_storage(classified_data)
-    # out_put_data(storage)
+    storage = fill_storage(classified_data, post_themes)
+    out_put_data(storage)
 
 
 if __name__ == "__main__":
