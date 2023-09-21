@@ -59,17 +59,19 @@ def handle_data(df: pd.DataFrame) -> pd.DataFrame:
     df = df.replace(to_replace=r"(@)\w+", value="", regex=True)
     df = df.replace(
         to_replace=r"^https?:\\/\\/(?:www\\.)?[-a-zA-Z0-9@:%._\\+~#=]{1,256}\\.[a-zA-Z0-9()]{1,6}\\b(?:[-a-zA-Z0-9()@:%_\\+.~#?&\\/=]*)$", value="", regex=True)
+    df = df.replace(to_replace=r"[]", value='')
 
     return df
 
 
-def classify_data(df: pd.DataFrame, post_themes: List[str]) -> pd.DataFrame:
+def classify_data(df: pd.DataFrame, post_themes: List[str], default_theme: str) -> pd.DataFrame:
     """
     Классификация всех постов по заданным тематикам
 
     Args:
         df (pd.DataFrame): Датафрейм с постами
         post_themes (List[str]): Темы постов
+        default_theme (str): Тема постов, которые не получилось классифицировать
 
     Returns:
         pd.DataFrame: Датафрейм с номым добавленным полем: 'Label'
@@ -80,8 +82,7 @@ def classify_data(df: pd.DataFrame, post_themes: List[str]) -> pd.DataFrame:
             proba = predict_zero_shot(paper, post_themes)
             df['Label'].iloc[indx] = post_themes[np.argmax(proba)]
         except:
-            label = 'Не удалось классифицировать'
-            df['Label'].iloc[indx] = label
+            df['Label'].iloc[indx] = default_theme
 
     return df
 
@@ -101,13 +102,14 @@ def fill_storage(df: pd.DataFrame, post_themes: List[str]) -> Tuple[Dict[str, Li
 
     # Создадим хранилище
     storage: Dict[str, List[str]] = {}
-    total_similar_saturated_posts = 0
+    # Рассчитаем кол-во постов по каждой из тематик
+    min_posts_amount = _compute_min_post_amount_output(df)
 
     for post_theme in post_themes:
 
         theme_posts = df['text'].loc[df['Label'] == post_theme].to_list()
-        storage[post_theme] = theme_posts[:2]
-        posts = theme_posts[2:]
+        storage[post_theme] = theme_posts[:min_posts_amount]
+        posts = theme_posts[min_posts_amount:]
 
         for post in posts:
             input_posts = [post for post in storage[post_theme]] + [post]
@@ -116,12 +118,61 @@ def fill_storage(df: pd.DataFrame, post_themes: List[str]) -> Tuple[Dict[str, Li
             if scores[max_similarity_indx] > 90:
                 if len(post) > len(storage[post_theme][max_similarity_indx]):
                     storage[post_theme][max_similarity_indx] = post
-                    total_similar_posts += 1
 
     return storage
 
 
-def compare_with_other_posts(storage: Dict[str, List[str]], post: Dict[str, str]) -> Dict[str, List[str]]:
+def output_data(classified_data: pd.DataFrame, storage: Dict[str, List[str]]) -> None:
+    """
+    Сохранение размеченного датасета в csv файл
+    Сохранение 10 самых уникальных и насыщенных постов по всем тематикам в txt файл
+
+    Args:
+        classified_data (pd.DataFrame): Размеченный датафрейм
+        storage (Dict[str, List[str]]): Хранилище постов. Ключ - тема поста, значение - тексты постов
+
+    Rerurns:
+        None
+    """
+    # Сохранение датафрейма
+    df_output_path = os.path.join(
+        '..', 'data', 'output_data', 'labeled_data.csv')
+    classified_data.to_csv(df_output_path, index=False)
+
+    # Сохранение уникальных постов
+    posts_output_path = os.path.join(
+        '..', 'data', 'output_data', 'unique_posts.txt')
+    with open(posts_output_path, 'w', encoding='utf-8') as f:
+        for post_theme, posts in storage.items():
+            f.write(post_theme.upper() + '\n')
+            for indx, post in enumerate(posts, start=1):
+                f.write(f'{indx}) {post}' + '\n')
+            f.write('-'*100 + '\n')
+
+
+def main():
+    # data_path = os.path.join('data', 'final_data.csv.gz')
+    data_path = r'D:\projects\ai_news\data\test.csv'
+    # post_themes = ['Блоги', 'Новости и СМИ', 'Развлечения и юмор', 'Технологии',
+    #                'Экономика', 'Бизнес и стартапы', 'Криптовалюты', 'Путешествия',
+    #                'Маркетинг, PR, реклама', 'Психология', 'Дизайн', 'Политика',
+    #                'Искусство', 'Право', 'Образование и познавательное', 'Спорт',
+    #                'Мода и красота', 'Здоровье и медицина', 'Картинки и фото',
+    #                'Софт и приложения', 'Видео и фильмы', 'Музыка', 'Игры', 'Цитаты'
+    #                'Еда и кулинария', 'Рукоделие', 'Финансы', 'Шоубиз', 'Другое']
+    post_themes = ['Финансы', 'Технологии', 'Политика',
+                   'Шоубиз', 'Fashion', 'Крипта', 'Путешествия/релокация',
+                   'Образовательный контент', 'Развлечения', 'Общее']
+    default_theme = 'Общее'
+
+    data = input_data(data_path)
+    data = handle_data(data)
+    classified_data = classify_data(data, post_themes, default_theme)
+    storage = fill_storage(classified_data, post_themes)
+    output_data(classified_data, storage)
+
+
+def _compare_with_other_posts(storage: Dict[str, List[str]], post: Dict[str, str]) -> Dict[str, List[str]]:
     """
     Сверяем введенный пост на степень сходства с 10 постами в хранилище
     Если степень сходства > 0.9 с записью из хранилища,
@@ -138,42 +189,23 @@ def compare_with_other_posts(storage: Dict[str, List[str]], post: Dict[str, str]
     """
 
 
-def out_put_data(storage: Dict[str, pd.DataFrame]) -> None:
+def _compute_min_post_amount_output(df: pd.DataFrame) -> int:
     """
-    Вывод 10 самых уникальных и насыщенных постов
-    по всем тематикам
+    Расчет количества уникальных и насыщенных постов для вывода:
+    За минимальное количество будем брать 10.
+    Но если по какой-либо из тематик кол-во постов меньше 10,
+    то берем минимальное количество среди всех тематик и выводим
 
     Args:
-        storage (Dict[str, pd.DataFrame]): Хранилище постов. Ключ - тема поста, значение - тексты постов
+        df (pd.DataFrame): Размеченный датафрейм
 
-    Rerurns:
-        None
+    Return:
+        int: Количество постов для вывода
     """
-    for post_theme, posts in storage.items():
-        print(post_theme.upper())
-        print(posts)
-        print('-' * 100)
-
-
-def main():
-    # data_path = os.path.join('data', 'final_data.csv.gz')
-    data_path = r'D:\projects\ai_news\data\test.csv'
-    # post_themes = ['Блоги', 'Новости и СМИ', 'Развлечения и юмор', 'Технологии',
-    #                'Экономика', 'Бизнес и стартапы', 'Криптовалюты', 'Путешествия',
-    #                'Маркетинг, PR, реклама', 'Психология', 'Дизайн', 'Политика',
-    #                'Искусство', 'Право', 'Образование и познавательное', 'Спорт',
-    #                'Мода и красота', 'Здоровье и медицина', 'Картинки и фото',
-    #                'Софт и приложения', 'Видео и фильмы', 'Музыка', 'Игры', 'Цитаты'
-    #                'Еда и кулинария', 'Рукоделие', 'Финансы', 'Шоубиз', 'Другое']
-    post_themes = ['Финансы', 'Технологии', 'Политика',
-                   'Шоубиз', 'Fashion', 'Крипта', 'Путешествия/релокация',
-                   'Образовательный контент', 'Развлечения', 'Общее']
-
-    data = input_data(data_path)
-    data = handle_data(data)
-    classified_data = classify_data(data, post_themes)
-    storage = fill_storage(classified_data, post_themes)
-    out_put_data(storage)
+    total_theme_posts = df['Label'].value_counts().tolist()
+    min_theme_posts = min(total_theme_posts) if min(
+        total_theme_posts) < 10 else 10
+    return min_theme_posts
 
 
 if __name__ == "__main__":
